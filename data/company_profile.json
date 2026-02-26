@@ -1,0 +1,63 @@
+{
+  "company_name": "Acme Consulting Ltd",
+  "annual_revenue": 8200000,
+  "currency": "GBP",
+  "employee_count": 45,
+  "certifications": [
+    {
+      "name": "ISO 27001",
+      "expiry": "2027-06-15",
+      "issuer": "BSI"
+    },
+    {
+      "name": "ISO 9001",
+      "expiry": "2026-11-30",
+      "issuer": "BSI"
+    },
+    {
+      "name": "Cyber Essentials Plus",
+      "expiry": "2026-04-12",
+      "issuer": "IASME"
+    }
+  ],
+  "past_contracts": [
+    {
+      "title": "Cloud Migration Programme",
+      "client": "NHS Digital",
+      "value": 500000,
+      "year": 2024,
+      "sector": "healthcare",
+      "description": "Migrated legacy systems to Azure cloud infrastructure"
+    },
+    {
+      "title": "Data Analytics Platform",
+      "client": "Department for Education",
+      "value": 350000,
+      "year": 2023,
+      "sector": "government",
+      "description": "Built data analytics dashboard for school performance monitoring"
+    },
+    {
+      "title": "Cybersecurity Assessment",
+      "client": "Moorfields Eye Hospital",
+      "value": 120000,
+      "year": 2024,
+      "sector": "healthcare",
+      "description": "Comprehensive security audit and remediation"
+    }
+  ],
+  "sectors": [
+    "healthcare",
+    "government",
+    "finance",
+    "education"
+  ],
+  "min_contract_value": 100000,
+  "max_contract_value": 5000000,
+  "geographic_coverage": [
+    "England",
+    "Wales",
+    "Scotland"
+  ],
+  "risk_appetite": "moderate"
+}

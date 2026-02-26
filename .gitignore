@@ -9,6 +9,8 @@ wheels/
 # Virtual environments
 .venv
 
+# project related files
 .env
 project.md
 claude.md
+architecture.md

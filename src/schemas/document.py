@@ -1,6 +1,6 @@
 """Document schemas for RAG indexing."""
 
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Optional
 from pydantic import BaseModel, Field
@@ -25,7 +25,7 @@ class DocumentMetadata(BaseModel):
     document_title: Optional[str] = None
     document_type: DocumentType = DocumentType.UNKNOWN
     page_count: Optional[int] = None
-    extracted_at: datetime = Field(default_factory=datetime.utcnow)
+    extracted_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
 class Document(BaseModel):

@@ -100,6 +100,7 @@ class RAGIndexer:
             SimpleField(
                 name="chunk_index",
                 type=SearchFieldDataType.Int32,
+                sortable=True,
             ),
             SimpleField(
                 name="total_chunks",

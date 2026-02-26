@@ -2,7 +2,7 @@
 
 import httpx
 from typing import Optional
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from src.config import get_settings
 from src.schemas.tender import Tender, TenderValue, TenderPeriod, Buyer
@@ -34,9 +34,9 @@ class TenderClient:
             List of tender release packages
         """
         if published_from is None:
-            published_from = datetime.utcnow() - timedelta(days=7)
+            published_from = datetime.now(timezone.utc) - timedelta(days=7)
         if published_to is None:
-            published_to = datetime.utcnow()
+            published_to = datetime.now(timezone.utc)
 
         params = {
             "publishedFrom": published_from.strftime("%Y-%m-%dT%H:%M:%SZ"),
@@ -51,7 +51,8 @@ class TenderClient:
         response.raise_for_status()
 
         data = response.json()
-        return data.get("results", [])
+        # API returns releases directly at root level
+        return data.get("releases", [])
 
     def get_tender_by_ocid(self, ocid: str) -> Optional[dict]:
         """
@@ -128,7 +129,7 @@ class TenderClient:
         self.close()
 
 
-async def fetch_recent_tenders(days: int = 7, limit: int = 10) -> list[Tender]:
+def fetch_recent_tenders(days: int = 7, limit: int = 10) -> list[Tender]:
     """
     Convenience function to fetch recent tenders.
 
@@ -140,17 +141,15 @@ async def fetch_recent_tenders(days: int = 7, limit: int = 10) -> list[Tender]:
         List of parsed Tender objects
     """
     with TenderClient() as client:
-        published_from = datetime.utcnow() - timedelta(days=days)
-        results = client.search_tenders(
+        published_from = datetime.now(timezone.utc) - timedelta(days=days)
+        releases = client.search_tenders(
             published_from=published_from,
             limit=limit,
         )
 
         tenders = []
-        for result in results:
-            releases = result.get("releases", [])
-            if releases:
-                tender = client.parse_tender(releases[0])
-                tenders.append(tender)
+        for release in releases:
+            tender = client.parse_tender(release)
+            tenders.append(tender)
 
         return tenders

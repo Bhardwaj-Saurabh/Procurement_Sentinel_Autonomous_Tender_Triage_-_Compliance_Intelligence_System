@@ -1,6 +1,7 @@
-"""Document chunker for RAG indexing."""
+"""Document chunker for RAG indexing with sentence-aware splitting."""
 
 import hashlib
+import re
 from typing import Optional
 
 from src.schemas.document import Document, DocumentChunk
@@ -8,29 +9,26 @@ from src.schemas.document import Document, DocumentChunk
 
 class DocumentChunker:
     """
-    Recursive character text splitter for tender documents.
+    Sentence-aware text splitter for tender documents.
 
-    Splits text by logical units (paragraphs → lines → sentences → words)
-    while maintaining overlap for context continuity.
+    Splits text by sentences while respecting paragraph boundaries.
+    Never breaks mid-sentence or mid-word.
     """
 
     def __init__(
         self,
         chunk_size: int = 500,
-        chunk_overlap: int = 100,
-        separators: Optional[list[str]] = None,
+        overlap_sentences: int = 1,
     ):
         """
         Initialize the chunker.
 
         Args:
             chunk_size: Target size for each chunk in characters
-            chunk_overlap: Number of overlapping characters between chunks
-            separators: List of separators to split on, in order of preference
+            overlap_sentences: Number of sentences to overlap between chunks
         """
         self.chunk_size = chunk_size
-        self.chunk_overlap = chunk_overlap
-        self.separators = separators or ["\n\n", "\n", ". ", ", ", " "]
+        self.overlap_sentences = overlap_sentences
 
     def chunk_document(self, document: Document) -> list[DocumentChunk]:
         """
@@ -71,9 +69,63 @@ class DocumentChunker:
 
         return chunks
 
+    def _split_into_sentences(self, text: str) -> list[str]:
+        """
+        Split text into sentences using regex.
+
+        Handles common abbreviations and edge cases.
+
+        Args:
+            text: Text to split
+
+        Returns:
+            List of sentences
+        """
+        # Pattern to split on sentence boundaries
+        # Matches: . ! ? followed by space and capital letter, or end of string
+        # Avoids splitting on common abbreviations like Mr. Mrs. Dr. etc.
+
+        # First, protect common abbreviations
+        protected = text
+        abbreviations = [
+            r'Mr\.', r'Mrs\.', r'Ms\.', r'Dr\.', r'Prof\.',
+            r'Inc\.', r'Ltd\.', r'Co\.', r'Corp\.',
+            r'vs\.', r'etc\.', r'e\.g\.', r'i\.e\.',
+            r'No\.', r'Vol\.', r'Rev\.', r'Ed\.',
+        ]
+
+        # Replace abbreviation periods with placeholder
+        for abbr in abbreviations:
+            protected = re.sub(abbr, abbr.replace(r'\.', '<PERIOD>'), protected)
+
+        # Split on sentence boundaries
+        # Match period/question/exclamation followed by space(s) and uppercase
+        # or followed by newline
+        sentences = re.split(r'(?<=[.!?])\s+(?=[A-Z])|(?<=[.!?])\s*\n', protected)
+
+        # Restore periods in abbreviations
+        sentences = [s.replace('<PERIOD>', '.').strip() for s in sentences]
+
+        # Filter empty strings
+        return [s for s in sentences if s.strip()]
+
+    def _split_into_paragraphs(self, text: str) -> list[str]:
+        """
+        Split text into paragraphs.
+
+        Args:
+            text: Text to split
+
+        Returns:
+            List of paragraphs
+        """
+        # Split on double newlines or multiple newlines
+        paragraphs = re.split(r'\n\s*\n', text)
+        return [p.strip() for p in paragraphs if p.strip()]
+
     def _split_text(self, text: str) -> list[str]:
         """
-        Recursively split text using separators.
+        Split text into chunks respecting sentence and paragraph boundaries.
 
         Args:
             text: Text to split
@@ -81,124 +133,87 @@ class DocumentChunker:
         Returns:
             List of text chunks
         """
-        return self._recursive_split(text, self.separators)
+        # First split into paragraphs
+        paragraphs = self._split_into_paragraphs(text)
 
-    def _recursive_split(self, text: str, separators: list[str]) -> list[str]:
-        """
-        Recursively split text, trying each separator in order.
+        # Build list of all sentences with paragraph markers
+        all_sentences = []
+        for para in paragraphs:
+            sentences = self._split_into_sentences(para)
+            if sentences:
+                all_sentences.extend(sentences)
+                # Add paragraph break marker (will be converted to newline)
+                all_sentences.append("<PARA_BREAK>")
 
-        Args:
-            text: Text to split
-            separators: Remaining separators to try
+        # Remove trailing paragraph break
+        if all_sentences and all_sentences[-1] == "<PARA_BREAK>":
+            all_sentences.pop()
 
-        Returns:
-            List of text chunks
-        """
-        if not text.strip():
-            return []
-
-        # If text is small enough, return as single chunk
-        if len(text) <= self.chunk_size:
-            return [text.strip()] if text.strip() else []
-
-        # No more separators - force split at chunk_size
-        if not separators:
-            return self._force_split(text)
-
-        # Try current separator
-        separator = separators[0]
-        remaining_separators = separators[1:]
-
-        if separator not in text:
-            # Separator not found, try next one
-            return self._recursive_split(text, remaining_separators)
-
-        # Split by current separator
-        parts = text.split(separator)
-
-        # Merge parts into chunks
+        # Group sentences into chunks
         chunks = []
-        current_chunk = ""
+        current_sentences = []
+        current_length = 0
 
-        for part in parts:
-            part_with_sep = part + separator if part != parts[-1] else part
+        for sentence in all_sentences:
+            if sentence == "<PARA_BREAK>":
+                # Don't count para breaks toward length, but include them
+                if current_sentences:
+                    current_sentences.append(sentence)
+                continue
 
-            # If adding this part exceeds chunk size
-            if len(current_chunk) + len(part_with_sep) > self.chunk_size:
-                # Save current chunk if not empty
-                if current_chunk.strip():
-                    chunks.append(current_chunk.strip())
+            sentence_length = len(sentence)
 
-                # If single part is too large, recursively split it
-                if len(part_with_sep) > self.chunk_size:
-                    sub_chunks = self._recursive_split(part_with_sep, remaining_separators)
-                    chunks.extend(sub_chunks)
-                    current_chunk = ""
-                else:
-                    current_chunk = part_with_sep
-            else:
-                current_chunk += part_with_sep
+            # If adding this sentence exceeds chunk size
+            if current_length + sentence_length > self.chunk_size and current_sentences:
+                # Save current chunk
+                chunk_text = self._join_sentences(current_sentences)
+                chunks.append(chunk_text)
+
+                # Start new chunk with overlap
+                overlap_start = max(0, len(current_sentences) - self.overlap_sentences)
+                # Filter out para breaks from overlap
+                overlap_sentences = [
+                    s for s in current_sentences[overlap_start:]
+                    if s != "<PARA_BREAK>"
+                ]
+                current_sentences = overlap_sentences.copy()
+                current_length = sum(len(s) for s in current_sentences)
+
+            current_sentences.append(sentence)
+            current_length += sentence_length
 
         # Don't forget the last chunk
-        if current_chunk.strip():
-            chunks.append(current_chunk.strip())
-
-        # Add overlap between chunks
-        return self._add_overlap(chunks)
-
-    def _force_split(self, text: str) -> list[str]:
-        """
-        Force split text at chunk_size when no separators work.
-
-        Args:
-            text: Text to split
-
-        Returns:
-            List of text chunks
-        """
-        chunks = []
-        start = 0
-
-        while start < len(text):
-            end = min(start + self.chunk_size, len(text))
-            chunk = text[start:end].strip()
-            if chunk:
-                chunks.append(chunk)
-            start = end - self.chunk_overlap if end < len(text) else end
+        if current_sentences:
+            chunk_text = self._join_sentences(current_sentences)
+            chunks.append(chunk_text)
 
         return chunks
 
-    def _add_overlap(self, chunks: list[str]) -> list[str]:
+    def _join_sentences(self, sentences: list[str]) -> str:
         """
-        Add overlap between chunks for context continuity.
+        Join sentences back into text.
 
         Args:
-            chunks: List of chunks without overlap
+            sentences: List of sentences (may include <PARA_BREAK> markers)
 
         Returns:
-            List of chunks with overlap added
+            Joined text
         """
-        if len(chunks) <= 1 or self.chunk_overlap == 0:
-            return chunks
+        result_parts = []
+        current_para = []
 
-        result = []
-        for i, chunk in enumerate(chunks):
-            if i == 0:
-                # First chunk: add suffix from next chunk
-                overlap_text = chunks[i + 1][:self.chunk_overlap] if len(chunks) > 1 else ""
-                result.append(chunk)
-            elif i == len(chunks) - 1:
-                # Last chunk: add prefix from previous chunk
-                prev_chunk = chunks[i - 1]
-                overlap_text = prev_chunk[-self.chunk_overlap:] if len(prev_chunk) > self.chunk_overlap else prev_chunk
-                result.append(overlap_text + " " + chunk)
+        for s in sentences:
+            if s == "<PARA_BREAK>":
+                if current_para:
+                    result_parts.append(" ".join(current_para))
+                    current_para = []
             else:
-                # Middle chunks: add prefix from previous
-                prev_chunk = chunks[i - 1]
-                overlap_text = prev_chunk[-self.chunk_overlap:] if len(prev_chunk) > self.chunk_overlap else prev_chunk
-                result.append(overlap_text + " " + chunk)
+                current_para.append(s)
 
-        return result
+        if current_para:
+            result_parts.append(" ".join(current_para))
+
+        return "\n\n".join(result_parts)
 
     def _extract_page_number(self, chunk_text: str) -> Optional[int]:
         """
@@ -210,7 +225,6 @@ class DocumentChunker:
         Returns:
             Page number if found, None otherwise
         """
-        import re
         match = re.search(r"--- Page (\d+) ---", chunk_text)
         if match:
             return int(match.group(1))
@@ -234,7 +248,7 @@ class DocumentChunker:
 def chunk_documents(
     documents: list[Document],
     chunk_size: int = 500,
-    chunk_overlap: int = 100,
+    overlap_sentences: int = 1,
 ) -> list[DocumentChunk]:
     """
     Convenience function to chunk multiple documents.
@@ -242,12 +256,15 @@ def chunk_documents(
     Args:
         documents: List of documents to chunk
         chunk_size: Target chunk size
-        chunk_overlap: Overlap between chunks
+        overlap_sentences: Number of sentences to overlap
 
     Returns:
         List of all chunks from all documents
     """
-    chunker = DocumentChunker(chunk_size=chunk_size, chunk_overlap=chunk_overlap)
+    chunker = DocumentChunker(
+        chunk_size=chunk_size,
+        overlap_sentences=overlap_sentences,
+    )
 
     all_chunks = []
     for doc in documents:

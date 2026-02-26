@@ -1,6 +1,7 @@
 """LangGraph workflow for tender analysis."""
 
-from typing import TypedDict, Annotated, Literal
+import time
+from typing import TypedDict, Literal
 import structlog
 from langgraph.graph import StateGraph, END
 
@@ -52,34 +53,59 @@ def ingest_node(state: TenderAnalysisState) -> TenderAnalysisState:
     """
     Ingest tender data and index documents.
 
-    Fetches tender from API, extracts text, chunks and indexes.
+    Can work with:
+    1. Pre-provided tender description (skip API fetch)
+    2. Already indexed data (skip indexing)
+    3. Fresh fetch from API
     """
     logger.info("ingest_node_start", tender_id=state["tender_id"])
 
     try:
-        # Fetch tender from API
-        with TenderClient() as client:
-            tender_data = client.get_tender_by_ocid(state["tender_id"])
+        tender_id = state["tender_id"]
+        tender_title = state.get("tender_title")
+        tender_description = state.get("tender_description")
 
-            if not tender_data:
-                return {
-                    **state,
-                    "error": f"Tender not found: {state['tender_id']}",
-                }
+        # Check if we need to fetch from API
+        if not tender_description:
+            # Try to search for this tender
+            with TenderClient() as client:
+                # Search recent tenders to find this one
+                releases = client.search_tenders(limit=100)
+                found = None
+                for release in releases:
+                    if release.get("ocid") == tender_id:
+                        found = release
+                        break
 
-            # Parse tender
-            releases = tender_data.get("releases", [tender_data])
-            if releases:
-                tender = client.parse_tender(releases[0])
-            else:
-                return {**state, "error": "No releases found in tender data"}
+                if found:
+                    tender = client.parse_tender(found)
+                    tender_title = tender.title
+                    tender_description = tender.description
+                    tender_id = tender.ocid
+                else:
+                    # Check if already indexed
+                    from src.rag.retriever import RAGRetriever
+                    retriever = RAGRetriever()
+                    existing = retriever.get_all_chunks_for_tender(tender_id)
+                    if existing:
+                        logger.info("using_existing_index", chunks=len(existing))
+                        return {
+                            **state,
+                            "tender_ocid": tender_id,
+                            "documents_indexed": len(existing),
+                        }
+                    else:
+                        return {
+                            **state,
+                            "error": f"Tender not found and no indexed data: {tender_id}",
+                        }
 
-        # Create document from tender description
+        # Create document and index
         loader = DocumentLoader()
         doc = loader.load_from_text(
-            text=tender.description or "No description available",
-            tender_id=tender.ocid,
-            document_title=tender.title,
+            text=tender_description or "No description available",
+            tender_id=tender_id,
+            document_title=tender_title or "Tender Document",
         )
 
         # Chunk and index
@@ -87,19 +113,24 @@ def ingest_node(state: TenderAnalysisState) -> TenderAnalysisState:
         chunks = chunker.chunk_document(doc)
 
         indexer = RAGIndexer()
+        # Delete existing chunks first
+        indexer.delete_by_tender_id(tender_id)
         indexed = indexer.index_chunks(chunks)
+
+        # Brief delay for Azure Search indexing
+        time.sleep(2)
 
         logger.info(
             "ingest_node_complete",
-            tender_id=tender.ocid,
+            tender_id=tender_id,
             chunks_indexed=indexed,
         )
 
         return {
             **state,
-            "tender_ocid": tender.ocid,
-            "tender_title": tender.title,
-            "tender_description": tender.description,
+            "tender_ocid": tender_id,
+            "tender_title": tender_title,
+            "tender_description": tender_description,
             "documents_indexed": indexed,
         }
 
